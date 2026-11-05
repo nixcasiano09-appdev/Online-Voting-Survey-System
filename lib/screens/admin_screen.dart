@@ -1,3 +1,4 @@
+import 'package:intl/intl.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -26,14 +27,20 @@ class _AdminScreenState extends State<AdminScreen> {
   final _announcementMessage = TextEditingController();
   final _electionFormKey = GlobalKey<FormState>();
   final _surveyFormKey = GlobalKey<FormState>();
+  final _electionEligibleRoles = {'student'};
+  final _surveyEligibleRoles = {'student'};
   Future<List<Map<String, dynamic>>>? _reports;
+  Future<Map<String, dynamic>>? _summary;
   bool _saving = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _reports = context.read<AppRepository>().loadSupportReports();
+    final repository = context.read<AppRepository>();
+    _reports = repository.loadSupportReports();
+    _summary = repository.loadAdminDashboardSummary();
+    repository.loadContent();
   }
 
   @override
@@ -114,8 +121,8 @@ class _AdminScreenState extends State<AdminScreen> {
                 .toList()
           : <String>[];
       if (prompt.isEmpty ||
-          !const {'single', 'multiple', 'text'}.contains(type) ||
-          (type != 'text' && options.length < 2)) {
+          !const {'single', 'multiple', 'rating', 'text'}.contains(type) ||
+          (type != 'text' && type != 'rating' && options.length < 2)) {
         throw const FormatException(
           'Check each survey question and its options.',
         );
@@ -127,6 +134,7 @@ class _AdminScreenState extends State<AdminScreen> {
           options: options,
           multiple: type == 'multiple',
           textAnswer: type == 'text',
+          ratingScale: type == 'rating',
         ),
       );
     }
@@ -181,8 +189,12 @@ class _AdminScreenState extends State<AdminScreen> {
         endDate: schedule.$2,
         positions: positions,
         eligibleStudentUids: eligible,
+        eligibleRoles: _electionEligibleRoles.toList(),
       );
-      if (mounted) showMessage(context, 'Election saved.');
+      if (mounted) {
+        setState(() => _summary = repository.loadAdminDashboardSummary());
+        showMessage(context, 'Election saved.');
+      }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
@@ -211,8 +223,12 @@ class _AdminScreenState extends State<AdminScreen> {
         endDate: schedule.$2,
         questions: questions,
         eligibleStudentUids: eligible,
+        eligibleRoles: _surveyEligibleRoles.toList(),
       );
-      if (mounted) showMessage(context, 'Survey saved.');
+      if (mounted) {
+        setState(() => _summary = repository.loadAdminDashboardSummary());
+        showMessage(context, 'Survey saved.');
+      }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
@@ -228,7 +244,14 @@ class _AdminScreenState extends State<AdminScreen> {
       );
       _announcementTitle.clear();
       _announcementMessage.clear();
-      if (mounted) showMessage(context, 'Announcement published.');
+      if (mounted) {
+        setState(
+          () => _summary = context
+              .read<AppRepository>()
+              .loadAdminDashboardSummary(),
+        );
+        showMessage(context, 'Announcement published.');
+      }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     }
@@ -260,6 +283,8 @@ class _AdminScreenState extends State<AdminScreen> {
               ? 'Admin actions are checked by Firebase custom claims.'
               : 'Admin functions require a configured Firebase project.',
         ),
+        const SizedBox(height: 12),
+        _dashboardOverview(),
         if (_error != null) ...[
           const SizedBox(height: 10),
           Text(
@@ -282,6 +307,116 @@ class _AdminScreenState extends State<AdminScreen> {
       ],
     );
   }
+
+  Widget _dashboardOverview() => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: FutureBuilder<Map<String, dynamic>>(
+        future: _summary,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Could not load dashboard summary: ${snapshot.error}'),
+                TextButton(
+                  onPressed: () => setState(
+                    () => _summary = context
+                        .read<AppRepository>()
+                        .loadAdminDashboardSummary(),
+                  ),
+                  child: const Text('RETRY'),
+                ),
+              ],
+            );
+          }
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final summary = snapshot.data!;
+          final activity =
+              (summary['recentActivity'] as List? ?? const <dynamic>[])
+                  .whereType<Map>();
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'System overview',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _summaryStat('Students', summary['totalStudents']),
+                  _summaryStat('Teachers', summary['totalTeachers']),
+                  _summaryStat('Elections', summary['totalElections']),
+                  _summaryStat('Surveys', summary['totalSurveys']),
+                  _summaryStat('Active', summary['activeActivities']),
+                  _summaryStat('Completed', summary['completedActivities']),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Recent announcements',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              if (activity.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text('No recent announcements.'),
+                )
+              else
+                for (final item in activity)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.notifications_none_rounded),
+                    title: Text(item['title'] as String? ?? 'Announcement'),
+                    subtitle: Text(
+                      item['message'] as String? ?? '',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: item['createdAt'] is int
+                        ? Text(
+                            DateFormat.MMMd().format(
+                              DateTime.fromMillisecondsSinceEpoch(
+                                item['createdAt'] as int,
+                              ).toLocal(),
+                            ),
+                          )
+                        : null,
+                  ),
+            ],
+          );
+        },
+      ),
+    ),
+  );
+
+  Widget _summaryStat(String label, dynamic value) => SizedBox(
+    width: 100,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppTheme.paleBlue,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              value?.toString() ?? '0',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            Text(label, style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      ),
+    ),
+  );
 
   Widget _electionEditor() => Card(
     child: ExpansionTile(
@@ -317,17 +452,21 @@ class _AdminScreenState extends State<AdminScreen> {
                 validator: _required,
               ),
               const SizedBox(height: 10),
+              _eligibleRolesField(
+                selected: _electionEligibleRoles,
+                onChanged: (role, selected) =>
+                    _toggleEligibleRole(_electionEligibleRoles, role, selected),
+              ),
               TextFormField(
                 controller: _electionEligibility,
                 decoration: const InputDecoration(
-                  labelText: 'Eligible student UIDs',
+                  labelText: 'Additional eligible account UIDs (optional)',
                   hintText: 'uid1, uid2, uid3',
                 ),
-                validator: _required,
               ),
               const SizedBox(height: 10),
               const Text(
-                'Student UIDs are available to school administrators in Firebase Authentication. Only listed students can submit a ballot.',
+                'Choose eligible roles above. Optionally add specific provisioned account UIDs.',
                 style: TextStyle(fontSize: 12),
               ),
               const SizedBox(height: 12),
@@ -371,19 +510,23 @@ class _AdminScreenState extends State<AdminScreen> {
                 maxLines: 9,
                 decoration: const InputDecoration(
                   labelText: 'Questions',
-                  hintText: 'single|How satisfied are you?|Very, Satisfied, Neutral\nmultiple|Which spaces do you use?|Library, Lab\ntext|What should improve?',
+                  hintText: 'single|How satisfied are you?|Very, Satisfied, Neutral\nmultiple|Which spaces do you use?|Library, Lab\nrating|Rate your experience from 1 to 5\ntext|What should improve?',
                   alignLabelWithHint: true,
                 ),
                 validator: _required,
               ),
               const SizedBox(height: 10),
+              _eligibleRolesField(
+                selected: _surveyEligibleRoles,
+                onChanged: (role, selected) =>
+                    _toggleEligibleRole(_surveyEligibleRoles, role, selected),
+              ),
               TextFormField(
                 controller: _surveyEligibility,
                 decoration: const InputDecoration(
-                  labelText: 'Eligible student UIDs',
+                  labelText: 'Additional eligible account UIDs (optional)',
                   hintText: 'uid1, uid2, uid3',
                 ),
-                validator: _required,
               ),
               const SizedBox(height: 12),
               PrimaryAction(
@@ -537,6 +680,11 @@ class _AdminScreenState extends State<AdminScreen> {
                               .read<AppRepository>()
                               .publishElectionResults(election.id);
                           if (mounted) {
+                            setState(
+                              () => _summary = context
+                                  .read<AppRepository>()
+                                  .loadAdminDashboardSummary(),
+                            );
                             showMessage(context, 'Results published.');
                           }
                         } catch (error) {
@@ -612,4 +760,39 @@ class _AdminScreenState extends State<AdminScreen> {
 
   String? _required(String? value) =>
       value == null || value.trim().isEmpty ? 'This field is required.' : null;
+
+  Widget _eligibleRolesField({
+    required Set<String> selected,
+    required void Function(String role, bool? selected) onChanged,
+  }) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Align(
+        alignment: Alignment.centerLeft,
+        child: Text('Eligible roles'),
+      ),
+      CheckboxListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Students'),
+        value: selected.contains('student'),
+        onChanged: (value) => onChanged('student', value),
+      ),
+      CheckboxListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Teachers'),
+        value: selected.contains('teacher'),
+        onChanged: (value) => onChanged('teacher', value),
+      ),
+    ],
+  );
+
+  void _toggleEligibleRole(Set<String> roles, String role, bool? selected) {
+    setState(() {
+      if (selected == true) {
+        roles.add(role);
+      } else if (roles.length > 1) {
+        roles.remove(role);
+      }
+    });
+  }
 }

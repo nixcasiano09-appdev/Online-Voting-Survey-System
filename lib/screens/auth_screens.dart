@@ -98,15 +98,16 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _studentId = TextEditingController();
+  final _identifier = TextEditingController();
   final _password = TextEditingController();
   bool _obscurePassword = true;
   bool _loading = false;
+  String _selectedRole = 'student';
   String? _error;
 
   @override
   void dispose() {
-    _studentId.dispose();
+    _identifier.dispose();
     _password.dispose();
     super.dispose();
   }
@@ -119,10 +120,13 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     try {
       await context.read<AppRepository>().signIn(
-        studentId: _studentId.text,
+        identifier: _identifier.text,
         password: _password.text,
+        selectedRole: _selectedRole,
       );
-      if (mounted) context.go('/home');
+      if (mounted) {
+        context.go(context.read<AppRepository>().dashboardLocation);
+      }
     } catch (error) {
       if (mounted) setState(() => _error = _friendlyAuthError(error));
     } finally {
@@ -135,7 +139,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (message.contains('wrong-password') ||
         message.contains('user-not-found') ||
         message.contains('invalid-credential')) {
-      return 'Student ID or password is incorrect.';
+      return 'Email or username, or password, is incorrect.';
     }
     if (message.contains('network-request-failed')) {
       return 'Network unavailable. Check your connection and try again.';
@@ -144,6 +148,17 @@ class _LoginScreenState extends State<LoginScreen> {
         .replaceFirst('Exception: ', '')
         .replaceFirst('FormatException: ', '')
         .replaceFirst('Bad state: ', '');
+  }
+
+  Future<void> _resetPassword() async {
+    try {
+      await context.read<AppRepository>().sendPasswordReset(_identifier.text);
+      if (mounted) {
+        setState(() => _error = 'Password reset instructions have been sent.');
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = _friendlyAuthError(error));
+    }
   }
 
   @override
@@ -178,16 +193,50 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 20),
                   Text(
-                    'School Online Voting',
+                    'Welcome to School Online Voting and Survey System',
                     textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall,
+                    style: Theme.of(context).textTheme.titleLarge,
                   ),
                   const SizedBox(height: 6),
-                  const Text(
-                    'Sign in with your school account.',
-                    textAlign: TextAlign.center,
+                  Text(
+                    'Select Your Role:',
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
-                  const SizedBox(height: 26),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _RoleOption(
+                        label: 'Admin',
+                        icon: Icons.admin_panel_settings_outlined,
+                        selected: _selectedRole == 'admin',
+                        onTap: () => setState(() {
+                          _selectedRole = 'admin';
+                          _error = null;
+                        }),
+                      ),
+                      const SizedBox(width: 8),
+                      _RoleOption(
+                        label: 'Student',
+                        icon: Icons.school_outlined,
+                        selected: _selectedRole == 'student',
+                        onTap: () => setState(() {
+                          _selectedRole = 'student';
+                          _error = null;
+                        }),
+                      ),
+                      const SizedBox(width: 8),
+                      _RoleOption(
+                        label: 'Teacher',
+                        icon: Icons.cast_for_education_outlined,
+                        selected: _selectedRole == 'teacher',
+                        onTap: () => setState(() {
+                          _selectedRole = 'teacher';
+                          _error = null;
+                        }),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
                   if (!app.firebaseConfigured)
                     const DemoBanner(
                       label: 'Demo credentials: 2024-1887 / demo1234',
@@ -208,14 +257,14 @@ class _LoginScreenState extends State<LoginScreen> {
                   ],
                   const SizedBox(height: 20),
                   TextFormField(
-                    controller: _studentId,
+                    controller: _identifier,
                     textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(
-                      labelText: 'Student ID',
-                      prefixIcon: Icon(Icons.badge_outlined),
+                      labelText: 'Email or Username',
+                      prefixIcon: Icon(Icons.person_outline_rounded),
                     ),
                     validator: (value) => value == null || value.trim().isEmpty
-                        ? 'Enter your Student ID.'
+                        ? 'Enter your email or username.'
                         : null,
                   ),
                   const SizedBox(height: 14),
@@ -253,11 +302,74 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                   ],
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: _loading ? null : _resetPassword,
+                      child: const Text('Forgot Password?'),
+                    ),
+                  ),
                   const SizedBox(height: 22),
                   PrimaryAction(
                     label: 'LOG IN',
                     loading: _loading,
                     onPressed: _login,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RoleOption extends StatelessWidget {
+  const _RoleOption({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = selected ? AppTheme.blue : theme.colorScheme.outline;
+    return Expanded(
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: '$label role',
+        child: Card(
+          margin: EdgeInsets.zero,
+          color: selected ? AppTheme.paleBlue : theme.colorScheme.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(color: color, width: selected ? 2 : 1),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+              child: Column(
+                children: [
+                  Icon(icon, color: color),
+                  const SizedBox(height: 4),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: selected ? AppTheme.navy : null,
+                      fontSize: 12,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                    ),
                   ),
                 ],
               ),

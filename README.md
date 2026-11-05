@@ -23,8 +23,8 @@ Firebase is optional for trying the app, but it is required for real accounts an
 1. Create a Firebase project and register Android and iOS apps. Add a Web app to run in Chrome.
    The generated Android application ID is `com.example.school_online_voting`; replace it with the school's registered package ID before release.
 2. Enable Email/Password in Firebase Authentication. School staff provision accounts; public registration is not included.
-3. Give each student an authentication email alias in the form `{normalized-student-id}@students.school.invalid` (lowercase, excluding characters other than letters, digits, dot, underscore, and hyphen). Assign a password through the approved school provisioning process. The student's actual email is not used as the login identifier.
-4. Create `students/{firebaseAuthUid}` documents with `studentId`, `fullName`, `email`, `course`, `yearLevel`, and `section`.
+3. Give each student an authentication email alias in the form `{normalized-student-id}@students.school.invalid` (lowercase, excluding characters other than letters, digits, dot, underscore, and hyphen). Assign a password through the approved school provisioning process. The student's actual email is not used as the login identifier. Teachers and administrators sign in with their provisioned Firebase Auth email.
+4. Create `students/{firebaseAuthUid}` documents with `studentId`, `fullName`, `email`, `course`, `yearLevel`, and `section`. Create `teachers/{firebaseAuthUid}` documents for teachers with their profile fields. Set the teacher's `role: 'teacher'` custom claim using a trusted Firebase Admin SDK process. The login role selector is only a request; the app verifies the authenticated account's trusted claim or provisioned student record.
 5. Install the Firebase CLI and Functions dependencies. Deploy the Firestore/Storage rules and callable functions:
 
    ```sh
@@ -58,14 +58,13 @@ Firebase is optional for trying the app, but it is required for real accounts an
 
    Have the administrator sign out and back in after setting the claim.
 
-Once connected, the student app reads active elections, surveys, the signed-in student's own voting/survey records, and notifications from Firestore. Elections and surveys are created in the Admin Console; add the eligible students' Firebase Auth UIDs when creating each activity. The Admin Console can publish notices/results and review support reports. Reports and optional screenshots are sent to Firestore and Firebase Storage.
+Once connected, users see the role dashboard verified for their Firebase account. Active elections and surveys are filtered to the account's assigned role or UID eligibility. The Admin Console can target students, teachers, or both, and can optionally add specific account UIDs. It also shows account/activity counts, creates and updates elections/surveys, publishes notices/results, and reviews support reports. Rating questions use a 1-5 scale. Reports and optional screenshots are sent to Firestore and Firebase Storage.
 
 ## Security notes
 
-- `submitBallot` and `submitSurvey` are callable Cloud Functions. They check authentication, eligibility, activity status and schedule, question/candidate choices, and duplicate submissions inside Firestore transactions. Duplicate ballot requests use a deterministic student/election document key.
+- `submitBallot` and `submitSurvey` are callable Cloud Functions. They check authentication, eligibility, activity status and schedule, question/candidate choices, and duplicate submissions inside Firestore transactions. A ballot and its voter-only participation receipt are written atomically; the ballot contains no voter UID and results are computed from anonymous ballots. Existing ballots written before this change still contain voter UIDs and must be securely migrated before claiming that historical ballots are anonymous.
 - Results are hidden until an administrator publishes them. Firestore rules deny direct client writes to ballots, responses, elections, candidates, and student records.
 - Admin actions check the Firebase Auth `admin` custom claim in Cloud Functions. A role value in a client-editable profile document is not sufficient.
-- **The supplied “My Votes” feature makes ballots voter-identifiable.** This implementation therefore stores the student's UID beside their selected candidates and is not a secret-ballot system. Do not deploy it for elections that require ballot secrecy without redesigning storage and receipt/history behavior to separate eligibility tracking from anonymous ballot choices.
 - Replace the sample support email/phone shown in Contact Support before deployment.
 - Review rules, eligibility imports, retention, privacy, and election procedures with the school's security and election administrators before real use.
 

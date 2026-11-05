@@ -39,10 +39,13 @@ class AppRepository extends ChangeNotifier {
   bool _hasLoadedContent = false;
   String? _contentError;
   String? _authError;
+  bool _isSigningOut = false;
 
   bool get isAuthenticated => _student != null;
   bool get isAdmin => _student?.role == 'admin';
+  bool get isTeacher => _student?.role == 'teacher';
   bool get isSubmitting => _isSubmitting;
+  bool get isSigningOut => _isSigningOut;
   bool get isLoadingContent => _isLoadingContent;
   String? get contentError => _contentError;
   String? get authError => _authError;
@@ -77,43 +80,93 @@ class AppRepository extends ChangeNotifier {
 
   Future<void> _onAuthStateChanged(User? user) async {
     if (user == null) {
-      _student = null;
+      _clearSession();
       _authError = null;
       notifyListeners();
       return;
     }
     if (_student?.uid == user.uid) return;
     try {
-      final record = await FirebaseFirestore.instance
-          .collection('students')
-          .doc(user.uid)
-          .get();
-      if (!record.exists) {
-        await FirebaseAuth.instance.signOut();
-        _authError = 'This account has no provisioned student record.';
-        notifyListeners();
-        return;
-      }
-      final data = record.data()!;
-      final token = await user.getIdTokenResult();
-      _student = Student(
-        uid: user.uid,
-        studentId: data['studentId'] as String? ?? '',
-        fullName: data['fullName'] as String? ?? 'Student',
-        course: data['course'] as String? ?? '',
-        yearLevel: data['yearLevel'] as String? ?? '',
-        section: data['section'] as String? ?? '',
-        email: data['email'] as String? ?? '',
-        role: token.claims?['admin'] == true ? 'admin' : 'student',
-      );
+      _student = await _accountFor(user);
       _authError = null;
       notifyListeners();
       await loadContent();
     } catch (error) {
-      _authError = 'Could not restore the signed-in account: $error';
+      Object? signOutError;
+      try {
+        await FirebaseAuth.instance.signOut();
+      } catch (error) {
+        signOutError = error;
+      }
+      _clearSession();
+      _authError = signOutError == null
+          ? 'Could not restore the signed-in account: $error'
+          : 'Could not restore the signed-in account: $error. Sign-out also failed: $signOutError';
       notifyListeners();
     }
   }
+
+  Future<Student> _accountFor(User user) async {
+    final token = await user.getIdTokenResult();
+    final claims = token.claims ?? const <String, dynamic>{};
+    final String role;
+    if (claims['admin'] == true) {
+      role = 'admin';
+    } else if (claims['role'] == 'teacher' || claims['teacher'] == true) {
+      role = 'teacher';
+    } else {
+      final studentRecord = await FirebaseFirestore.instance
+          .collection('students')
+          .doc(user.uid)
+          .get();
+      if (!studentRecord.exists) {
+        throw StateError(
+          'This account has no trusted student, teacher, or administrator role.',
+        );
+      }
+      role = 'student';
+    }
+
+    final collection = switch (role) {
+      'teacher' => 'teachers',
+      'student' => 'students',
+      _ => null,
+    };
+    final record = collection == null
+        ? null
+        : await FirebaseFirestore.instance
+              .collection(collection)
+              .doc(user.uid)
+              .get();
+    final data = record?.data() ?? const <String, dynamic>{};
+    final email = user.email ?? data['email'] as String? ?? '';
+    return Student(
+      uid: user.uid,
+      studentId:
+          data['studentId'] as String? ??
+          data['username'] as String? ??
+          email.split('@').first,
+      fullName:
+          data['fullName'] as String? ??
+          user.displayName ??
+          (role == 'admin'
+              ? 'Administrator'
+              : role == 'teacher'
+              ? 'Teacher'
+              : 'Student'),
+      course: data['course'] as String? ?? '',
+      yearLevel: data['yearLevel'] as String? ?? '',
+      section: data['section'] as String? ?? '',
+      email: email,
+      role: role,
+    );
+  }
+
+  String get dashboardLocation => switch (student.role) {
+    'admin' => '/admin',
+    'teacher' => '/teacher',
+    _ => '/home',
+  };
 
   Election electionById(String id) =>
       _elections.firstWhere((election) => election.id == id);
@@ -155,11 +208,25 @@ class AppRepository extends ChangeNotifier {
     try {
       final firestore = FirebaseFirestore.instance;
       final uid = FirebaseAuth.instance.currentUser!.uid;
+      final activityResult = await FirebaseFunctions.instance
+          .httpsCallable('listEligibleActivities')
+          .call();
+      final activityData = Map<String, dynamic>.from(
+        activityResult.data as Map,
+      );
+      final eligibleElectionIds = Set<String>.from(
+        activityData['electionIds'] as List,
+      );
+      final eligibleSurveyIds = Set<String>.from(
+        activityData['surveyIds'] as List,
+      );
       final electionSnapshots = await firestore
           .collection('elections')
           .where('status', whereIn: ['active', 'completed'])
           .get();
-      _elections = electionSnapshots.docs.map((document) {
+      _elections = electionSnapshots.docs
+          .where((document) => eligibleElectionIds.contains(document.id))
+          .map((document) {
         final data = document.data();
         final start = _asDate(data['startDate']);
         final end = _asDate(data['endDate']);
@@ -206,7 +273,9 @@ class AppRepository extends ChangeNotifier {
           .collection('surveys')
           .where('status', isEqualTo: 'active')
           .get();
-      _surveys = surveySnapshots.docs.map((document) {
+      _surveys = surveySnapshots.docs
+          .where((document) => eligibleSurveyIds.contains(document.id))
+          .map((document) {
         final data = document.data();
         final start = _asDate(data['startDate']);
         final end = _asDate(data['endDate']);
@@ -224,21 +293,36 @@ class AppRepository extends ChangeNotifier {
         );
       }).toList();
 
-      final voteSnapshots = await firestore
+      final receiptSnapshots = await firestore
+          .collection('vote_receipts')
+          .where('studentUid', isEqualTo: uid)
+          .get();
+      final legacyVoteSnapshots = await firestore
           .collection('votes')
           .where('studentUid', isEqualTo: uid)
           .get();
-      _firebaseVotes = voteSnapshots.docs.map((document) {
-        final data = document.data();
-        return VoteRecord(
-          electionId: data['electionId'] as String? ?? '',
-          electionTitle: data['electionTitle'] as String? ?? 'Election',
-          selections: Map<String, String>.from(
-            data['selectedCandidates'] as Map? ?? const {},
-          ),
-          submittedAt: _asDate(data['submittedAt']) ?? DateTime.now(),
-        );
-      }).toList()..sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
+      _firebaseVotes = [
+        ...receiptSnapshots.docs.map((document) {
+          final data = document.data();
+          return VoteRecord(
+            electionId: data['electionId'] as String? ?? '',
+            electionTitle: data['electionTitle'] as String? ?? 'Election',
+            selections: const {},
+            submittedAt: _asDate(data['submittedAt']) ?? DateTime.now(),
+          );
+        }),
+        ...legacyVoteSnapshots.docs.map((document) {
+          final data = document.data();
+          return VoteRecord(
+            electionId: data['electionId'] as String? ?? '',
+            electionTitle: data['electionTitle'] as String? ?? 'Election',
+            selections: Map<String, String>.from(
+              data['selectedCandidates'] as Map? ?? const {},
+            ),
+            submittedAt: _asDate(data['submittedAt']) ?? DateTime.now(),
+          );
+        }),
+      ]..sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
 
       final responseSnapshots = await firestore
           .collection('survey_responses')
@@ -328,23 +412,34 @@ class AppRepository extends ChangeNotifier {
             .toList(),
         multiple: type == 'multiple' || question['multiple'] == true,
         textAnswer: type == 'text' || question['textAnswer'] == true,
+        ratingScale: type == 'rating',
       );
     }).toList();
   }
 
   Future<void> signIn({
-    required String studentId,
+    required String identifier,
     required String password,
+    required String selectedRole,
   }) async {
-    final normalizedId = studentId.trim();
-    if (normalizedId.isEmpty || password.isEmpty) {
-      throw const FormatException('Enter your Student ID and password.');
+    final normalizedIdentifier = identifier.trim();
+    if (normalizedIdentifier.isEmpty || password.isEmpty) {
+      throw const FormatException('Enter your email or username and password.');
+    }
+    if (!const {'admin', 'student', 'teacher'}.contains(selectedRole)) {
+      throw ArgumentError.value(selectedRole, 'selectedRole', 'Unknown role');
     }
 
     if (!firebaseConfigured) {
-      if (normalizedId != demoStudent.studentId || password != 'demo1234') {
+      if (normalizedIdentifier != demoStudent.studentId ||
+          password != 'demo1234') {
         throw const FormatException(
           'Demo login: use Student ID 2024-1887 and password demo1234.',
+        );
+      }
+      if (selectedRole != demoStudent.role) {
+        throw StateError(
+          'Selected role does not match this account. This is a Student account.',
         );
       }
       _student = demoStudent;
@@ -352,37 +447,53 @@ class AppRepository extends ChangeNotifier {
       return;
     }
 
-    final authEmail = _studentIdAlias(normalizedId);
-    final credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
-      email: authEmail,
-      password: password,
-    );
-    final uid = credential.user?.uid;
-    if (uid == null) {
-      throw StateError('Authentication succeeded without a user identifier.');
+    try {
+      final authEmail = normalizedIdentifier.contains('@')
+          ? normalizedIdentifier
+          : _studentIdAlias(normalizedIdentifier);
+      final credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: authEmail,
+        password: password,
+      );
+      final user = credential.user;
+      if (user == null) {
+        throw StateError('Authentication succeeded without a user identifier.');
+      }
+      final account = await _accountFor(user);
+      if (account.role != selectedRole) {
+        throw StateError(
+          'Selected role does not match this account. This is a ${_roleName(account.role)} account.',
+        );
+      }
+      _student = account;
+      _authError = null;
+      notifyListeners();
+    } catch (_) {
+      if (FirebaseAuth.instance.currentUser != null) {
+        await FirebaseAuth.instance.signOut();
+      }
+      _clearSession();
+      rethrow;
     }
+  }
 
-    final record = await FirebaseFirestore.instance
-        .collection('students')
-        .doc(uid)
-        .get();
-    if (!record.exists) {
-      await FirebaseAuth.instance.signOut();
-      throw StateError('This authenticated account has no student record.');
+  String _roleName(String role) =>
+      '${role[0].toUpperCase()}${role.substring(1)}';
+
+  Future<void> sendPasswordReset(String identifier) async {
+    final normalizedIdentifier = identifier.trim();
+    if (normalizedIdentifier.isEmpty) {
+      throw const FormatException('Enter your email or username first.');
     }
-    final data = record.data()!;
-    final token = await credential.user!.getIdTokenResult();
-    _student = Student(
-      uid: uid,
-      studentId: data['studentId'] as String? ?? normalizedId,
-      fullName: data['fullName'] as String? ?? 'Student',
-      course: data['course'] as String? ?? '',
-      yearLevel: data['yearLevel'] as String? ?? '',
-      section: data['section'] as String? ?? '',
-      email: data['email'] as String? ?? '',
-      role: token.claims?['admin'] == true ? 'admin' : 'student',
-    );
-    notifyListeners();
+    if (!firebaseConfigured) {
+      throw StateError(
+        'Password reset is available only for school accounts connected to Firebase.',
+      );
+    }
+    final email = normalizedIdentifier.contains('@')
+        ? normalizedIdentifier
+        : _studentIdAlias(normalizedIdentifier);
+    await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
   }
 
   Future<void> saveElection({
@@ -393,6 +504,7 @@ class AppRepository extends ChangeNotifier {
     required DateTime endDate,
     required List<BallotPosition> positions,
     required List<String> eligibleStudentUids,
+    required List<String> eligibleRoles,
   }) async {
     if (!isAdmin || !firebaseConfigured) {
       throw StateError('Only a connected administrator can manage elections.');
@@ -413,6 +525,7 @@ class AppRepository extends ChangeNotifier {
           )
           .toList(),
       'eligibleStudentUids': eligibleStudentUids,
+      'eligibleRoles': eligibleRoles,
     });
     await loadContent(force: true);
   }
@@ -425,6 +538,7 @@ class AppRepository extends ChangeNotifier {
     required DateTime endDate,
     required List<SurveyQuestion> questions,
     required List<String> eligibleStudentUids,
+    required List<String> eligibleRoles,
   }) async {
     if (!isAdmin || !firebaseConfigured) {
       throw StateError('Only a connected administrator can manage surveys.');
@@ -446,12 +560,15 @@ class AppRepository extends ChangeNotifier {
                   ? 'text'
                   : question.multiple
                   ? 'multiple'
+                  : question.ratingScale
+                  ? 'rating'
                   : 'single',
               'required': true,
             },
           )
           .toList(),
       'eligibleStudentUids': eligibleStudentUids,
+      'eligibleRoles': eligibleRoles,
     });
     await loadContent(force: true);
   }
@@ -477,6 +594,18 @@ class AppRepository extends ChangeNotifier {
     return snapshot.docs
         .map((document) => {'id': document.id, ...document.data()})
         .toList();
+  }
+
+  Future<Map<String, dynamic>> loadAdminDashboardSummary() async {
+    if (!isAdmin || !firebaseConfigured) {
+      throw StateError(
+        'Only a connected administrator can load the dashboard summary.',
+      );
+    }
+    final result = await FirebaseFunctions.instance
+        .httpsCallable('getAdminDashboardSummary')
+        .call();
+    return Map<String, dynamic>.from(result.data as Map);
   }
 
   Future<void> updateSupportReport(String reportId, String status) async {
@@ -537,7 +666,23 @@ class AppRepository extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
-    if (firebaseConfigured) await FirebaseAuth.instance.signOut();
+    if (_isSigningOut) return;
+    _isSigningOut = true;
+    notifyListeners();
+    try {
+      if (firebaseConfigured) await FirebaseAuth.instance.signOut();
+      _clearSession();
+      _authError = null;
+    } catch (error) {
+      _authError = 'Could not log out. Please try again: $error';
+      rethrow;
+    } finally {
+      _isSigningOut = false;
+      notifyListeners();
+    }
+  }
+
+  void _clearSession() {
     _student = null;
     _elections = firebaseConfigured ? [] : demoElections;
     _surveys = firebaseConfigured ? [] : demoSurveys;
@@ -547,7 +692,7 @@ class AppRepository extends ChangeNotifier {
     _hasLoadedContent = false;
     _draftVotes.clear();
     _draftSurveys.clear();
-    notifyListeners();
+    _contentError = null;
   }
 
   Future<void> submitVote(String electionId) async {
@@ -609,6 +754,7 @@ class AppRepository extends ChangeNotifier {
       final answer = answers[question.id];
       if (answer is String) return answer.trim().isNotEmpty;
       if (answer is List) return answer.isNotEmpty;
+      if (answer is int) return answer >= 1 && answer <= 5;
       return false;
     });
   }

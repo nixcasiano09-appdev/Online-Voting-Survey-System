@@ -41,7 +41,7 @@ class _SurveyScreenState extends State<SurveyScreen> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 28),
       children: [
-        PageHeading(eyebrow: 'Student survey', title: survey.title),
+        PageHeading(eyebrow: 'Role-eligible survey', title: survey.title),
         Text(survey.description),
         const SizedBox(height: 14),
         if (!app.firebaseConfigured)
@@ -143,6 +143,23 @@ class _QuestionCard extends StatelessWidget {
                     app.setSurveyAnswer(surveyId, question.id, updated);
                   },
                 )
+            else if (question.ratingScale)
+              RadioGroup<int>(
+                groupValue: answer is int ? answer : null,
+                onChanged: (value) =>
+                    app.setSurveyAnswer(surveyId, question.id, value),
+                child: Column(
+                  children: [
+                    for (var rating = 1; rating <= 5; rating++)
+                      RadioListTile<int>(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        value: rating,
+                        title: Text('$rating'),
+                      ),
+                  ],
+                ),
+              )
             else
               RadioGroup<String>(
                 groupValue: answer is String ? answer : null,

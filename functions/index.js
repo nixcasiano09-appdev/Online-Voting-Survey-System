@@ -22,12 +22,100 @@ function requireAdmin(request) {
   return uid;
 }
 
+async function requireVoter(request) {
+  const uid = requireStudent(request);
+  const claims = request.auth.token;
+  const collection = claims.admin === true
+    ? null
+    : claims.role === 'teacher' || claims.teacher === true
+    ? 'teachers'
+    : claims.role === 'student' || !claims.role
+    ? 'students'
+    : null;
+  if (!collection) {
+    throw new HttpsError('permission-denied', 'Only student and teacher accounts can participate.');
+  }
+  const profile = await db.collection(collection).doc(uid).get();
+  if (!profile.exists) {
+    throw new HttpsError('permission-denied', 'Your account role is not provisioned for participation.');
+  }
+  return { uid, role: collection === 'teachers' ? 'teacher' : 'student' };
+}
+
 function validateId(value, label) {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value)) {
     throw new HttpsError('invalid-argument', `${label} is invalid.`);
   }
   return value;
 }
+
+function validateEligibleRoles(value) {
+  const roles = value == null ? ['student'] : value;
+  if (!Array.isArray(roles) || roles.length === 0
+    || roles.some((role) => !['student', 'teacher'].includes(role))) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Select at least one eligible role: student or teacher.',
+    );
+  }
+  return [...new Set(roles)];
+}
+
+exports.listEligibleActivities = onCall(async (request) => {
+  const uid = requireStudent(request);
+  const isAdmin = request.auth.token.admin === true;
+  const voter = isAdmin ? null : await requireVoter(request);
+  const [elections, surveys] = await Promise.all([
+    db.collection('elections')
+      .where('status', 'in', ['active', 'completed'])
+      .get(),
+    db.collection('surveys').where('status', '==', 'active').get(),
+  ]);
+  if (isAdmin) {
+    return {
+      electionIds: elections.docs.map((document) => document.id),
+      surveyIds: surveys.docs.map((document) => document.id),
+    };
+  }
+
+  const role = voter.role;
+  const electionIds = [];
+  for (const document of elections.docs) {
+    const data = document.data();
+    if (data.resultsPublished === true) {
+      electionIds.push(document.id);
+      continue;
+    }
+    const eligibleRoles = Array.isArray(data.eligibleRoles)
+      ? data.eligibleRoles
+      : ['student'];
+    const eligibility = await document.ref
+      .collection('eligibility')
+      .doc(uid)
+      .get();
+    if (eligibleRoles.includes(role)
+      || (eligibility.exists && eligibility.data().eligible === true)) {
+      electionIds.push(document.id);
+    }
+  }
+
+  const surveyIds = [];
+  for (const document of surveys.docs) {
+    const data = document.data();
+    const eligibleRoles = Array.isArray(data.eligibleRoles)
+      ? data.eligibleRoles
+      : ['student'];
+    const eligibility = await document.ref
+      .collection('eligibleStudents')
+      .doc(uid)
+      .get();
+    if (eligibleRoles.includes(role)
+      || (eligibility.exists && eligibility.data().eligible === true)) {
+      surveyIds.push(document.id);
+    }
+  }
+  return { electionIds, surveyIds };
+});
 
 function validateWindow(data, now) {
   if (data.status !== 'active') {
@@ -61,8 +149,8 @@ function normalizePositions(value) {
 }
 
 async function replaceEligibility(parentRef, subcollection, studentUids) {
-  if (!Array.isArray(studentUids) || studentUids.length === 0 || studentUids.length > 400) {
-    throw new HttpsError('invalid-argument', 'Provide 1 to 400 eligible student UIDs.');
+  if (!Array.isArray(studentUids) || studentUids.length > 400) {
+    throw new HttpsError('invalid-argument', 'Provide no more than 400 eligible account UIDs.');
   }
   const uids = [...new Set(studentUids.map((uid) => String(uid).trim()))];
   if (uids.some((uid) => !/^[a-zA-Z0-9_-]{1,128}$/.test(uid))) {
@@ -74,12 +162,23 @@ async function replaceEligibility(parentRef, subcollection, studentUids) {
     const refs = uids
       .slice(offset, offset + 400)
       .map((uid) => db.collection('students').doc(uid));
-    studentSnapshots.push(...await db.getAll(...refs));
+    const teacherRefs = uids
+      .slice(offset, offset + 400)
+      .map((uid) => db.collection('teachers').doc(uid));
+    const [students, teachers] = await Promise.all([
+      db.getAll(...refs),
+      db.getAll(...teacherRefs),
+    ]);
+    studentSnapshots.push(...students.map((student, index) => ({
+      student,
+      teacher: teachers[index],
+    })));
   }
-  if (studentSnapshots.some((student) => !student.exists)) {
+  if (studentSnapshots.some(({ student, teacher }) =>
+    !student.exists && !teacher.exists)) {
     throw new HttpsError(
       'invalid-argument',
-      'Every eligible UID must refer to a provisioned student account.',
+      'Every eligible UID must refer to a provisioned student or teacher account.',
     );
   }
   const existing = await collection.get();
@@ -103,7 +202,7 @@ async function replaceEligibility(parentRef, subcollection, studentUids) {
 }
 
 exports.submitBallot = onCall(async (request) => {
-  const uid = requireStudent(request);
+  const { uid, role } = await requireVoter(request);
   const electionId = validateId(request.data?.electionId, 'Election ID');
   const selections = request.data?.selectedCandidates;
   if (!selections || typeof selections !== 'object' || Array.isArray(selections)) {
@@ -112,23 +211,35 @@ exports.submitBallot = onCall(async (request) => {
 
   const electionRef = db.collection('elections').doc(electionId);
   const eligibilityRef = electionRef.collection('eligibility').doc(uid);
-  const ballotRef = db.collection('votes').doc(`${electionId}_${uid}`);
+  const receiptRef = db.collection('vote_receipts').doc(`${electionId}_${uid}`);
+  const legacyBallotRef = db.collection('votes').doc(`${electionId}_${uid}`);
+  const ballotRef = db.collection('votes').doc();
   const now = Date.now();
 
   await db.runTransaction(async (transaction) => {
-    const [electionSnapshot, eligibilitySnapshot, ballotSnapshot] =
+    const [
+      electionSnapshot,
+      eligibilitySnapshot,
+      receiptSnapshot,
+      legacyBallotSnapshot,
+    ] =
       await Promise.all([
         transaction.get(electionRef),
         transaction.get(eligibilityRef),
-        transaction.get(ballotRef),
+        transaction.get(receiptRef),
+        transaction.get(legacyBallotRef),
       ]);
     if (!electionSnapshot.exists) {
       throw new HttpsError('not-found', 'Election not found.');
     }
-    if (!eligibilitySnapshot.exists || eligibilitySnapshot.data().eligible !== true) {
+    const storedRoles = electionSnapshot.data().eligibleRoles;
+    const roleEligible = (Array.isArray(storedRoles) ? storedRoles : ['student'])
+      .includes(role);
+    if ((!eligibilitySnapshot.exists || eligibilitySnapshot.data().eligible !== true)
+      && !roleEligible) {
       throw new HttpsError('permission-denied', 'You are not eligible for this election.');
     }
-    if (ballotSnapshot.exists) {
+    if (receiptSnapshot.exists || legacyBallotSnapshot.exists) {
       throw new HttpsError('already-exists', 'A ballot has already been submitted.');
     }
 
@@ -154,17 +265,22 @@ exports.submitBallot = onCall(async (request) => {
     transaction.create(ballotRef, {
       electionId,
       electionTitle: election.title || electionId,
-      studentUid: uid,
       selectedCandidates: selections,
       submittedAt: admin.firestore.FieldValue.serverTimestamp(),
       status: 'submitted',
+    });
+    transaction.create(receiptRef, {
+      electionId,
+      electionTitle: election.title || electionId,
+      studentUid: uid,
+      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
   });
   return { submitted: true };
 });
 
 exports.submitSurvey = onCall(async (request) => {
-  const uid = requireStudent(request);
+  const { uid, role } = await requireVoter(request);
   const surveyId = validateId(request.data?.surveyId, 'Survey ID');
   const answers = request.data?.answers;
   if (!answers || typeof answers !== 'object' || Array.isArray(answers)) {
@@ -187,7 +303,11 @@ exports.submitSurvey = onCall(async (request) => {
     if (!surveySnapshot.exists) {
       throw new HttpsError('not-found', 'Survey not found.');
     }
-    if (!eligibilitySnapshot.exists || eligibilitySnapshot.data().eligible !== true) {
+    const storedRoles = surveySnapshot.data().eligibleRoles;
+    const roleEligible = (Array.isArray(storedRoles) ? storedRoles : ['student'])
+      .includes(role);
+    if ((!eligibilitySnapshot.exists || eligibilitySnapshot.data().eligible !== true)
+      && !roleEligible) {
       throw new HttpsError('permission-denied', 'You are not eligible for this survey.');
     }
     if (responseSnapshot.exists) {
@@ -203,7 +323,7 @@ exports.submitSurvey = onCall(async (request) => {
     const questionIds = new Set(questions.map((question) => question.id));
     if (questionIds.size !== questions.length
       || questions.some((question) => !question.id
-        || !['single', 'multiple', 'text', undefined].includes(question.type))) {
+        || !['single', 'multiple', 'rating', 'text', undefined].includes(question.type))) {
       throw new HttpsError('failed-precondition', 'This survey is not configured correctly.');
     }
     if (Object.keys(answers).some((questionId) => !questionIds.has(questionId))) {
@@ -214,6 +334,8 @@ exports.submitSurvey = onCall(async (request) => {
       const answer = answers[question.id];
       if (question.type === 'text' && typeof answer === 'string'
         && answer.trim().length > 0 && answer.length <= 4000) continue;
+      if (question.type === 'rating' && Number.isInteger(answer)
+        && answer >= 1 && answer <= 5) continue;
       if (question.type === 'multiple' && Array.isArray(answer)
         && answer.length > 0
         && answer.every((value) => question.options?.includes(value))) continue;
@@ -238,6 +360,7 @@ exports.upsertElection = onCall(async (request) => {
   requireAdmin(request);
   const election = request.data;
   const electionId = validateId(election?.electionId, 'Election ID');
+  const eligibleRoles = validateEligibleRoles(election.eligibleRoles);
   if (typeof election.title !== 'string' || !Array.isArray(election.positions)
     || !election.startDate || !election.endDate) {
     throw new HttpsError('invalid-argument', 'Election title, schedule, and positions are required.');
@@ -286,10 +409,15 @@ exports.upsertElection = onCall(async (request) => {
       status: 'draft',
       resultsPublished: false,
       positions,
+      eligibleRoles,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
   });
-  await replaceEligibility(electionRef, 'eligibility', election.eligibleStudentUids);
+  await replaceEligibility(
+    electionRef,
+    'eligibility',
+    election.eligibleStudentUids || [],
+  );
 
   const oldCandidates = await db.collection('candidates')
     .where('electionId', '==', electionId)
@@ -327,6 +455,7 @@ exports.upsertSurvey = onCall(async (request) => {
   requireAdmin(request);
   const survey = request.data;
   const surveyId = validateId(survey?.surveyId, 'Survey ID');
+  const eligibleRoles = validateEligibleRoles(survey.eligibleRoles);
   if (typeof survey.title !== 'string' || !Array.isArray(survey.questions)
     || !survey.startDate || !survey.endDate) {
     throw new HttpsError('invalid-argument', 'Survey title, schedule, and questions are required.');
@@ -343,11 +472,11 @@ exports.upsertSurvey = onCall(async (request) => {
     if (!question || typeof question.id !== 'string' || !question.id
       || questionIds.has(question.id) || typeof question.prompt !== 'string'
       || !question.prompt.trim()
-      || !['single', 'multiple', 'text'].includes(question.type)) {
+      || !['single', 'multiple', 'rating', 'text'].includes(question.type)) {
       throw new HttpsError('invalid-argument', 'A survey question is invalid.');
     }
     questionIds.add(question.id);
-    if (question.type !== 'text'
+    if (question.type !== 'text' && question.type !== 'rating'
       && (!Array.isArray(question.options) || question.options.length < 2
         || question.options.some((option) => typeof option !== 'string' || !option.trim()))) {
       throw new HttpsError('invalid-argument', 'A survey question needs valid options.');
@@ -379,10 +508,15 @@ exports.upsertSurvey = onCall(async (request) => {
       endDate: admin.firestore.Timestamp.fromMillis(endMillis),
       status: 'draft',
       questions: survey.questions,
+      eligibleRoles,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
   });
-  await replaceEligibility(surveyRef, 'eligibleStudents', survey.eligibleStudentUids);
+  await replaceEligibility(
+    surveyRef,
+    'eligibleStudents',
+    survey.eligibleStudentUids || [],
+  );
   await surveyRef.update({
     status: survey.status === 'active' ? 'active' : 'draft',
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -426,6 +560,54 @@ exports.listSurveyResponses = onCall(async (request) => {
       submittedAt: data.submittedAt?.toMillis?.() || null,
     };
   });
+});
+
+exports.getAdminDashboardSummary = onCall(async (request) => {
+  requireAdmin(request);
+  const count = async (query) => {
+    const snapshot = await query.count().get();
+    return snapshot.data().count;
+  };
+  const [
+    totalStudents,
+    totalTeachers,
+    totalElections,
+    totalSurveys,
+    activeElections,
+    completedElections,
+    activeSurveys,
+    completedSurveys,
+    recentNotifications,
+  ] = await Promise.all([
+    count(db.collection('students')),
+    count(db.collection('teachers')),
+    count(db.collection('elections')),
+    count(db.collection('surveys')),
+    count(db.collection('elections').where('status', '==', 'active')),
+    count(db.collection('elections').where('status', '==', 'completed')),
+    count(db.collection('surveys').where('status', '==', 'active')),
+    count(db.collection('surveys').where('status', '==', 'completed')),
+    db.collection('notifications')
+      .orderBy('createdAt', 'desc')
+      .limit(5)
+      .get(),
+  ]);
+  return {
+    totalStudents,
+    totalTeachers,
+    totalElections,
+    totalSurveys,
+    activeActivities: activeElections + activeSurveys,
+    completedActivities: completedElections + completedSurveys,
+    recentActivity: recentNotifications.docs.map((document) => {
+      const data = document.data();
+      return {
+        title: data.title || 'Announcement',
+        message: data.message || '',
+        createdAt: data.createdAt?.toMillis?.() || null,
+      };
+    }),
+  };
 });
 
 exports.publishResults = onCall(async (request) => {

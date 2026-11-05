@@ -25,10 +25,17 @@ class VotingApp extends StatelessWidget {
         final authenticated = repository.isAuthenticated;
         final isAuthPage =
             state.matchedLocation == '/' || state.matchedLocation == '/login';
-        if (!authenticated && !isAuthPage) return '/';
-        if (authenticated && isAuthPage) return '/home';
+        if (!authenticated && !isAuthPage) return '/login';
+        if (authenticated && isAuthPage) return repository.dashboardLocation;
         if (state.matchedLocation == '/admin' && !repository.isAdmin) {
-          return '/home';
+          return repository.dashboardLocation;
+        }
+        if (state.matchedLocation == '/teacher' && !repository.isTeacher) {
+          return repository.dashboardLocation;
+        }
+        if (state.matchedLocation == '/home' &&
+            (repository.isAdmin || repository.isTeacher)) {
+          return repository.dashboardLocation;
         }
         return null;
       },
@@ -40,6 +47,10 @@ class VotingApp extends StatelessWidget {
               AppShell(location: state.uri.path, child: child),
           routes: [
             GoRoute(path: '/home', builder: _page(const DashboardScreen())),
+            GoRoute(
+              path: '/teacher',
+              builder: _page(const TeacherDashboardScreen()),
+            ),
             GoRoute(
               path: '/election/:id',
               builder: (_, state) =>
