@@ -86,6 +86,7 @@ class SurveyQuestion {
     required this.options,
     this.multiple = false,
     this.textAnswer = false,
+    this.ratingScale = false,
   });
 
   final String id;
@@ -93,6 +94,7 @@ class SurveyQuestion {
   final List<String> options;
   final bool multiple;
   final bool textAnswer;
+  final bool ratingScale;
 }
 
 class SurveyRecord {

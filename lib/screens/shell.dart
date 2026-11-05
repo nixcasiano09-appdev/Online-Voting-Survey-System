@@ -12,7 +12,7 @@ class AppShell extends StatelessWidget {
   final Widget child;
 
   String get _title {
-    if (location == '/home') return 'HOME';
+    if (location == '/home' || location == '/teacher') return 'HOME';
     if (location == '/notifications') return 'NOTIFICATIONS';
     if (location == '/profile') return 'PROFILE';
     if (location == '/admin') return 'ADMIN';
@@ -35,7 +35,8 @@ class AppShell extends StatelessWidget {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: Text(_title),
-      leading: location == '/home'
+      leading:
+          location == '/home' || location == '/teacher' || location == '/admin'
           ? Builder(
               builder: (context) => IconButton(
                 tooltip: 'Open menu',
@@ -49,7 +50,7 @@ class AppShell extends StatelessWidget {
                 if (context.canPop()) {
                   context.pop();
                 } else {
-                  context.go('/home');
+                  context.go(context.read<AppRepository>().dashboardLocation);
                 }
               },
               icon: const Icon(Icons.arrow_back_rounded),
@@ -80,7 +81,7 @@ class AppShell extends StatelessWidget {
           case 0:
             context.go('/notifications');
           case 1:
-            context.go('/home');
+            context.go(context.read<AppRepository>().dashboardLocation);
           case 2:
             context.go('/profile');
         }
@@ -106,7 +107,59 @@ class AppShell extends StatelessWidget {
   );
 }
 
-class _NavigationDrawer extends StatelessWidget {
+class _NavigationDrawer extends StatefulWidget {
+  @override
+  State<_NavigationDrawer> createState() => _NavigationDrawerState();
+}
+
+class _NavigationDrawerState extends State<_NavigationDrawer> {
+  bool _loggingOut = false;
+
+  Future<void> _confirmSignOut() async {
+    if (_loggingOut) return;
+    setState(() => _loggingOut = true);
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Log out?'),
+        content: const Text('Are you sure you want to log out?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (shouldLogout != true) {
+      setState(() => _loggingOut = false);
+      return;
+    }
+
+    final repository = context.read<AppRepository>();
+    final messenger = ScaffoldMessenger.of(context);
+    Navigator.of(context).pop();
+    try {
+      await repository.signOut();
+      if (mounted) context.go('/login');
+    } catch (error) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Could not log out. Please try again. $error'),
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _loggingOut = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final repository = context.watch<AppRepository>();
@@ -122,6 +175,7 @@ class _NavigationDrawer extends StatelessWidget {
           '/help',
           '/results',
           if (student.role == 'admin') '/admin',
+          if (student.role == 'teacher') '/teacher',
         ];
         if (index < routes.length) context.go(routes[index]);
       },
@@ -148,7 +202,7 @@ class _NavigationDrawer extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      'Student ID: ${student.studentId}',
+                      '${student.role[0].toUpperCase()}${student.role.substring(1)} · ${student.studentId}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
@@ -183,37 +237,20 @@ class _NavigationDrawer extends StatelessWidget {
             icon: Icon(Icons.admin_panel_settings_outlined),
             label: Text('Admin Console'),
           ),
+        if (student.role == 'teacher')
+          const NavigationDrawerDestination(
+            icon: Icon(Icons.cast_for_education_outlined),
+            label: Text('Teacher Dashboard'),
+          ),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
           child: Divider(),
         ),
         ListTile(
           leading: const Icon(Icons.logout_rounded, color: AppTheme.navy),
-          title: const Text('Logout'),
-          onTap: () async {
-            Navigator.pop(context);
-            final shouldLogout = await showDialog<bool>(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: const Text('Log out?'),
-                content: const Text('Are you sure you want to log out?'),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('NO'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    child: const Text('YES'),
-                  ),
-                ],
-              ),
-            );
-            if (shouldLogout == true && context.mounted) {
-              await context.read<AppRepository>().signOut();
-              if (context.mounted) context.go('/');
-            }
-          },
+          title: Text(_loggingOut ? 'Logging out...' : 'Logout'),
+          enabled: !_loggingOut && !repository.isSigningOut,
+          onTap: _confirmSignOut,
         ),
       ],
     );

@@ -9,7 +9,9 @@ import '../models/app_models.dart';
 import 'common_widgets.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  const DashboardScreen({super.key, this.role = 'student'});
+
+  final String role;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -54,6 +56,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           app.student.fullName.split(' ').first,
           style: Theme.of(context).textTheme.headlineSmall,
         ),
+        if (widget.role == 'teacher') ...[
+          const SizedBox(height: 4),
+          const Text('Teacher dashboard'),
+        ],
         const SizedBox(height: 18),
         if (app.elections.isNotEmpty) ...[
           _DashboardSpotlight(
@@ -62,7 +68,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 20),
         ],
-        SectionTitle('Elections'),
+        SectionTitle(
+          widget.role == 'teacher' ? 'Teacher elections' : 'Elections',
+        ),
         if (app.elections.isEmpty)
           const _NoActivities(
             message: 'There are no open elections right now.',
@@ -81,7 +89,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onTap: () => context.go('/election/${election.id}'),
           ),
         const SizedBox(height: 16),
-        SectionTitle('Surveys'),
+        SectionTitle(widget.role == 'teacher' ? 'Teacher surveys' : 'Surveys'),
         if (app.surveys.isEmpty)
           const _NoActivities(message: 'There are no open surveys right now.'),
         for (final survey in app.surveys)
@@ -102,6 +110,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ],
     );
   }
+}
+
+class TeacherDashboardScreen extends StatelessWidget {
+  const TeacherDashboardScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) => const DashboardScreen(role: 'teacher');
 }
 
 class _DashboardSpotlight extends StatelessWidget {
@@ -395,11 +410,14 @@ class ProfileScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final student = context.watch<AppRepository>().student;
+    final roleName =
+        '${student.role[0].toUpperCase()}${student.role.substring(1)}';
     final fields = <String, String>{
-      'Student ID': student.studentId,
-      'Course / Program': student.course,
-      'Year level': student.yearLevel,
-      'Section': student.section,
+      'Role': roleName,
+      'Email or username': student.studentId,
+      if (student.course.isNotEmpty) 'Course / Program': student.course,
+      if (student.yearLevel.isNotEmpty) 'Year level': student.yearLevel,
+      if (student.section.isNotEmpty) 'Section': student.section,
       'Email address': student.email,
     };
     return ListView(
@@ -543,22 +561,27 @@ class MyVotesScreen extends StatelessWidget {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const Divider(height: 20),
-                  for (final selection in record.selections.entries)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 7),
-                      child: Row(
-                        children: [
-                          Expanded(child: Text(selection.key)),
-                          Text(
-                            selection.value,
-                            style: const TextStyle(
-                              color: AppTheme.navy,
-                              fontWeight: FontWeight.w700,
+                  if (record.selections.isEmpty)
+                    const Text(
+                      'Your ballot is recorded. Individual choices are confidential.',
+                    )
+                  else
+                    for (final selection in record.selections.entries)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 7),
+                        child: Row(
+                          children: [
+                            Expanded(child: Text(selection.key)),
+                            Text(
+                              selection.value,
+                              style: const TextStyle(
+                                color: AppTheme.navy,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
                 ],
               ),
             ),

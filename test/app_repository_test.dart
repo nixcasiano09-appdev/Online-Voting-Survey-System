@@ -14,19 +14,60 @@ void main() {
 
   test('demo authentication rejects invalid credentials', () async {
     await expectLater(
-      repository.signIn(studentId: '2024-1887', password: 'bad-password'),
+      repository.signIn(
+        identifier: '2024-1887',
+        password: 'bad-password',
+        selectedRole: 'student',
+      ),
       throwsA(isA<FormatException>()),
     );
     expect(repository.isAuthenticated, isFalse);
 
-    await repository.signIn(studentId: '2024-1887', password: 'demo1234');
+    await repository.signIn(
+      identifier: '2024-1887',
+      password: 'demo1234',
+      selectedRole: 'student',
+    );
     expect(repository.isAuthenticated, isTrue);
+  });
+
+  test(
+    'demo authentication rejects a role that does not match the account',
+    () async {
+      await expectLater(
+        repository.signIn(
+          identifier: '2024-1887',
+          password: 'demo1234',
+          selectedRole: 'admin',
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(repository.isAuthenticated, isFalse);
+    },
+  );
+
+  test('sign out clears the authenticated session', () async {
+    await repository.signIn(
+      identifier: '2024-1887',
+      password: 'demo1234',
+      selectedRole: 'student',
+    );
+    expect(repository.isAuthenticated, isTrue);
+
+    await repository.signOut();
+
+    expect(repository.isAuthenticated, isFalse);
+    expect(repository.isSigningOut, isFalse);
   });
 
   test(
     'vote requires one choice per position and rejects a duplicate',
     () async {
-      await repository.signIn(studentId: '2024-1887', password: 'demo1234');
+      await repository.signIn(
+        identifier: '2024-1887',
+        password: 'demo1234',
+        selectedRole: 'student',
+      );
       const electionId = 'student-council';
       final election = repository.electionById(electionId);
       expect(repository.isVoteComplete(electionId), isFalse);
@@ -57,7 +98,11 @@ void main() {
   test(
     'survey submission requires every answer and cannot be repeated',
     () async {
-      await repository.signIn(studentId: '2024-1887', password: 'demo1234');
+      await repository.signIn(
+        identifier: '2024-1887',
+        password: 'demo1234',
+        selectedRole: 'student',
+      );
       const surveyId = 'academic-experience';
       final survey = repository.surveyById(surveyId);
       expect(repository.isSurveyComplete(surveyId), isFalse);

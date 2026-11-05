@@ -15,12 +15,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /teachers/{teacherUid} {
+      allow read: if signedIn() && request.auth.uid == teacherUid;
+      allow write: if false;
+    }
+
     match /elections/{electionId} {
       allow read: if signedIn();
       allow write: if false;
 
       match /eligibility/{studentUid} {
-        allow read: if admin();
+        allow get: if admin()
+          || (signedIn() && request.auth.uid == studentUid);
+        allow list: if admin();
         allow write: if false;
       }
     }
@@ -36,9 +43,22 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /vote_receipts/{receiptId} {
+      allow get, list: if signedIn()
+        && resource.data.studentUid == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
     match /surveys/{surveyId} {
       allow read: if signedIn();
       allow write: if false;
+
+      match /eligibleStudents/{studentUid} {
+        allow get: if admin()
+          || (signedIn() && request.auth.uid == studentUid);
+        allow list: if admin();
+        allow write: if false;
+      }
     }
 
     match /survey_responses/{responseId} {

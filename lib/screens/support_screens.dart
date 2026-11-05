@@ -104,7 +104,7 @@ class FaqScreen extends StatelessWidget {
   static const faqs = <(String, String)>[
     (
       'How do I log in?',
-      'Use the Student ID and password issued by your school. Student accounts are provisioned by authorized staff; this app does not offer public registration.',
+      'Choose your assigned role, then use the school account credentials issued to you. Accounts are provisioned by authorized staff; this app does not offer public registration.',
     ),
     (
       'How do I cast a vote?',
@@ -148,11 +148,11 @@ class GuidelinesScreen extends StatelessWidget {
   const GuidelinesScreen({super.key});
 
   static const instructions = [
-    'Only eligible students with an active school account may participate.',
+    'Only eligible students and teachers with an active school account may participate.',
     'Read the election title and position before selecting a candidate.',
     'Choose one candidate per position. Review every selection carefully.',
     'Submit your ballot before the deadline shown by the school.',
-    'Each student can submit one ballot per election. A submitted ballot cannot be edited.',
+    'Each eligible account can submit one ballot per election. A submitted ballot cannot be edited.',
     'Election results are only shown after an administrator officially publishes them.',
   ];
 
@@ -321,7 +321,7 @@ class HowToVoteScreen extends StatelessWidget {
   const HowToVoteScreen({super.key});
 
   static const steps = [
-    'Log in using your Student ID and password.',
+    'Choose your assigned role and log in using your school account.',
     'Open the Student Dashboard.',
     'Select an available election.',
     'Choose your preferred candidate for each position.',
