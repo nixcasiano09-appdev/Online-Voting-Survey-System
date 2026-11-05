@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function admin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    match /students/{studentUid} {
+      allow read: if signedIn()
+        && (request.auth.uid == studentUid || admin());
+      allow write: if false;
+    }
+
+    match /elections/{electionId} {
+      allow read: if signedIn();
+      allow write: if false;
+
+      match /eligibility/{studentUid} {
+        allow read: if admin();
+        allow write: if false;
+      }
+    }
+
+    match /candidates/{candidateId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    match /votes/{voteId} {
+      allow get, list: if signedIn()
+        && resource.data.studentUid == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /surveys/{surveyId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    match /survey_responses/{responseId} {
+      allow get, list: if signedIn()
+        && resource.data.studentUid == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn()
+        && (resource.data.targetAudience == 'all'
+          || resource.data.targetAudience == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /support_reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.studentUid == request.auth.uid
+        && request.resource.data.keys().hasAll([
+          'studentUid', 'category', 'description', 'screenshotUrl',
+          'status', 'submittedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'studentUid', 'category', 'description', 'screenshotUrl',
+          'status', 'submittedAt'
+        ])
+        && request.resource.data.category in [
+          'Login issue', 'Voting problem', 'Survey problem',
+          'Accessibility', 'Other'
+        ]
+        && request.resource.data.description is string
+        && request.resource.data.description.size() >= 10
+        && request.resource.data.description.size() <= 2000
+        && request.resource.data.status == 'open'
+        && request.resource.data.submittedAt is timestamp
+        && (request.resource.data.screenshotUrl == null
+          || request.resource.data.screenshotUrl is string);
+      allow read: if admin()
+        || (signedIn() && resource.data.studentUid == request.auth.uid);
+      allow update, delete: if admin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

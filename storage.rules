@@ -1,0 +1,35 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function admin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    match /support_reports/{studentUid}/{fileName} {
+      allow create: if signedIn()
+        && request.auth.uid == studentUid
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow read: if admin() || (signedIn() && request.auth.uid == studentUid);
+      allow update, delete: if false;
+    }
+
+    match /candidate_photos/{fileName} {
+      allow read: if signedIn();
+      allow write: if admin()
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    match /student_profiles/{studentUid}/{fileName} {
+      allow read: if signedIn() && request.auth.uid == studentUid;
+      allow write: if admin()
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}
